@@ -5,18 +5,23 @@ namespace BibliotecasSIG
 {
     public class UpdateInfo
     {
-        public string currentVersion { get; set; }
-        public string updateVersion { get; set; }
-        public string updateUrl { get; set; }
-        public string[] changelog { get; set; }
-        public string releaseDate { get; set; }
-        public string minimumCompatibleVersion { get; set; }
+        public string? currentVersion { get; set; }
+        public string? updateVersion { get; set; }
+        public string? updateUrl { get; set; }
+        public string[] changelog { get; set; } = [];
+        public string? releaseDate { get; set; }
+        public string? minimumCompatibleVersion { get; set; }
     }
 
     public class UpdateChecker
     {
-        private readonly string _updateInfoUrl;
-        private readonly string _currentVersion;
+        private static readonly HttpClient httpClient = new()
+        {
+            Timeout = TimeSpan.FromSeconds(30)
+        };
+
+        private readonly string? _updateInfoUrl;
+        private readonly string? _currentVersion;
 
         public UpdateChecker()
         {
@@ -32,11 +37,16 @@ namespace BibliotecasSIG
         {
             try
             {
-                using var client = new HttpClient();
-                var response = await client.GetStringAsync(_updateInfoUrl);
+                if (string.IsNullOrWhiteSpace(_updateInfoUrl))
+                    throw new InvalidOperationException("URL de atualizacao nao configurada.");
+
+                if (string.IsNullOrWhiteSpace(_currentVersion))
+                    throw new InvalidOperationException("Versao atual nao informada.");
+
+                var response = await httpClient.GetStringAsync(_updateInfoUrl);
                 var updateInfo = JsonSerializer.Deserialize<UpdateInfo>(response);
 
-                if (IsUpdateAvailable(_currentVersion, updateInfo.updateVersion))
+                if (updateInfo is not null && IsUpdateAvailable(_currentVersion, updateInfo.updateVersion))
                     return updateInfo;
 
                 return null;
@@ -47,8 +57,11 @@ namespace BibliotecasSIG
             }
         }
 
-        private static bool IsUpdateAvailable(string currentVersion, string newVersion)
+        private static bool IsUpdateAvailable(string currentVersion, string? newVersion)
         {
+            if (string.IsNullOrWhiteSpace(newVersion))
+                return false;
+
             var current = new Version(currentVersion);
             var latest = new Version(newVersion);
 
@@ -59,8 +72,7 @@ namespace BibliotecasSIG
         {
             try
             {
-                using var client = new HttpClient();
-                var fileBytes = await client.GetByteArrayAsync(downloadUrl);
+                var fileBytes = await httpClient.GetByteArrayAsync(downloadUrl);
                 await File.WriteAllBytesAsync(destinationPath, fileBytes);
                 return true;
             }
@@ -70,12 +82,11 @@ namespace BibliotecasSIG
             }
         }
 
-        public async Task<bool> DownloadUpdateAsync(string downloadUrl, string destinationPath, IProgress<double> progress = null)
+        public async Task<bool> DownloadUpdateAsync(string downloadUrl, string destinationPath, IProgress<double>? progress = null)
         {
             try
             {
-                using var client = new HttpClient();
-                using var response = await client.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead);
+                using var response = await httpClient.GetAsync(downloadUrl, HttpCompletionOption.ResponseHeadersRead);
                 response.EnsureSuccessStatusCode();
 
                 var totalBytes = response.Content.Headers.ContentLength ?? -1L;
@@ -104,7 +115,7 @@ namespace BibliotecasSIG
                     if (canReportProgress)
                     {
                         double percent = Math.Round((double)totalRead / totalBytes * 100, 2);
-                        progress.Report(percent);
+                        progress!.Report(percent);
                     }
                 }
 
@@ -116,17 +127,17 @@ namespace BibliotecasSIG
             }
         }
 
-        public async Task<bool> ExtrairZipComProgressoAsync(string caminhoZip, IProgress<double> progress = null)
+        public async Task<bool> ExtrairZipComProgressoAsync(string caminhoZip, IProgress<double>? progress = null)
         {
             try
             {
                 // Obtém a pasta onde o ZIP está localizado (ex: "Upload")
-                string pastaUpload = Path.GetDirectoryName(caminhoZip);
+                string? pastaUpload = Path.GetDirectoryName(caminhoZip);
                 if (string.IsNullOrEmpty(pastaUpload))
                     throw new Exception("Pasta do arquivo zip não encontrada.");
 
                 // Obtém a pasta pai, onde será extraído o conteúdo
-                string pastaPai = Directory.GetParent(pastaUpload)?.FullName;
+                string? pastaPai = Directory.GetParent(pastaUpload)?.FullName;
                 if (string.IsNullOrEmpty(pastaPai))
                     throw new Exception("Pasta pai não encontrada.");
 
@@ -158,7 +169,13 @@ namespace BibliotecasSIG
                 foreach (var entry in arquivosParaExtrair)
                 {
                     // Destino: combina a pasta pai com o nome completo da entrada
-                    string destino = Path.Combine(pastaPai, entry.FullName);
+                    string destino = Path.GetFullPath(Path.Combine(pastaPai, entry.FullName));
+                    string pastaPaiNormalizada = Path.GetFullPath(pastaPai);
+                    if (!pastaPaiNormalizada.EndsWith(Path.DirectorySeparatorChar))
+                        pastaPaiNormalizada += Path.DirectorySeparatorChar;
+
+                    if (!destino.StartsWith(pastaPaiNormalizada, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException($"Entrada insegura no arquivo zip: {entry.FullName}");
                     
 
                     // Se a entrada for um diretório, cria-o; caso contrário, extrai o arquivo
@@ -169,7 +186,7 @@ namespace BibliotecasSIG
                     else
                     {
                         // Cria o diretório destino, se não existir
-                        Directory.CreateDirectory(Path.GetDirectoryName(destino));
+                        Directory.CreateDirectory(Path.GetDirectoryName(destino)!);
                         // Extrai o arquivo, sobrescrevendo se já existir
                         entry.ExtractToFile(destino, overwrite: true);
                     }
